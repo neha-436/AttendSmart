@@ -2,6 +2,8 @@ import streamlit as st
 from datetime import datetime
 from google_sheets import open_spreadsheet
 from holidays import is_today_national_holiday, is_today_user_holiday
+from notifications import predict_risk
+
 
 SPREADSHEET_ID = "1wGnF_bV3pNMx2l3BtwXEfKFdbs3ToYsgxqqgnKBAqgU"
 
@@ -45,6 +47,83 @@ with tab_login:
             user_id = get_or_create_user(name, email)
             st.session_state["user_id"] = user_id
             st.success(f"Logged in successfully! User ID: {user_id}")
+
+    # ---------- TELEGRAM LINKING ----------
+    import random
+
+    if "user_id" in st.session_state:
+
+        st.subheader("📊 Attendance Risk Status")
+
+    try:
+        risk_data = predict_risk(spreadsheet, user_id)
+
+        current_pct = risk_data["current_pct"]
+        projected_pct = risk_data["projected_pct"]
+        risk = risk_data["risk"]
+        message = risk_data["message"]
+
+        # ---- Color Mapping ----
+        if risk == "SAFE":
+            st.success(f"🟢 SAFE — {current_pct}%")
+        elif risk == "BORDERLINE":
+            st.warning(f"🟡 BORDERLINE — {current_pct}%")
+        elif risk == "HIGH":
+            st.error(f"🟠 HIGH RISK — {current_pct}%")
+        else:
+            st.error(f"🔴 CRITICAL — {current_pct}%")
+
+        # ---- Metrics ----
+        col1, col2 = st.columns(2)
+        col1.metric("Current Attendance", f"{current_pct}%")
+        col2.metric("Projected Attendance", f"{projected_pct}%")
+
+        # ---- Explanation ----
+        st.info(message)
+
+    except ValueError as e:
+        st.warning("📅 Semester dates not set yet.")
+        st.caption("Please add semester start & end dates to enable attendance tracking.")
+
+
+
+        st.subheader("🔗 Telegram Linking")
+
+        if "telegram_code" not in st.session_state:
+            st.session_state["telegram_code"] = f"AS-{random.randint(1000,9999)}"
+            ws = spreadsheet.worksheet("Notification_Settings")
+            rows = ws.get_all_records()
+
+            existing = next(
+                (r for r in rows if str(r["user_id"]) == str(st.session_state["user_id"])),
+                None
+            )
+
+            if existing and existing.get("telegram_chat_id"):
+                st.success("✅ Telegram already linked")
+            else:
+                if existing:
+                    row_index = rows.index(existing) + 2
+                    ws.update_cell(row_index, 6, st.session_state["telegram_code"])  # telegram_code
+                else:
+                    ws.append_row([
+                        st.session_state["user_id"],
+                        "no",
+                        "no",
+                        "no",
+                        "",                                # telegram_chat_id
+                        st.session_state["telegram_code"], # telegram_code
+                        "",
+                        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    ])
+
+        st.info(
+            "To receive Telegram notifications:\n\n"
+            f"1️⃣ Open the Telegram bot\n"
+            f"2️⃣ Send this command:\n\n"
+            f"`/link {st.session_state['telegram_code']}`"
+        )
+
 
 
 # ---------------- HOLIDAY TAB ----------------
@@ -130,7 +209,7 @@ with tab_holidays:
                     new_category
                 ]])
                 st.success("Holiday updated ✅")
-                st.experimental_rerun()
+                st.rerun()
 
         st.subheader("❌ Delete Holiday")
 
@@ -145,7 +224,7 @@ with tab_holidays:
             if st.button("Delete Holiday"):
                 ws.delete_rows(del_item["_row"])
                 st.success("Holiday deleted 🗑️")
-                st.experimental_rerun()
+                st.rerun()
 
 
 
@@ -154,6 +233,7 @@ with tab_timetable:
     if "user_id" not in st.session_state:
         st.warning("Please login first")
     else:
+        user_id = str(st.session_state["user_id"])
         # Holiday block (TODAY)
         national = is_today_national_holiday(spreadsheet)
         if national:
@@ -241,7 +321,7 @@ with tab_timetable:
                     new_end.strftime("%H:%M")
                 ]])
                 st.success("Lecture updated ✅")
-                st.experimental_rerun()
+                st.rerun()
 
         st.subheader("❌ Delete Lecture")
 
@@ -256,7 +336,7 @@ with tab_timetable:
             if st.button("Delete Lecture"):
                 timetable_ws.delete_rows(del_lec["_row"])
                 st.success("Lecture deleted 🗑️")
-                st.experimental_rerun()
+                st.rerun()
 
 
 # ---------------- ATTENDANCE TAB ----------------
@@ -346,61 +426,75 @@ with tab_attendance:
 
 # ---------------- NOTIFICATIONS TAB ----------------
 with tab_notifications:
-    st.subheader("🔔 Notification Preferences")
+    if "user_id" not in st.session_state:
+        st.warning("Please login first")
+    else:
+        st.subheader("🔔 Notification Preferences")
 
-    ws = spreadsheet.worksheet("Notification_Settings")
-    data = ws.get_all_records()
+        ws = spreadsheet.worksheet("Notification_Settings")
+        data = ws.get_all_records()
 
-    existing = next(
-        (r for r in data if str(r["user_id"]) == str(st.session_state["user_id"])),
-        None
-    )
+        existing = next(
+            (r for r in data if str(r["user_id"]) == str(st.session_state["user_id"])),
+            None
+        )
 
-    telegram = st.checkbox(
-        "Telegram Notifications",
-        value=(existing and existing["telegram"] == "yes"),
-        key="notif_telegram"
-    )
+        telegram = st.checkbox(
+            "Telegram Notifications",
+            value=(existing and existing["telegram"] == "yes"),
+            key="notif_telegram"
+        )
 
-    email = st.checkbox(
-        "Email Notifications",
-        value=(existing and existing["email"] == "yes"),
-        key="notif_email"
-    )
+        email = st.checkbox(
+            "Email Notifications",
+            value=(existing and existing["email"] == "yes"),
+            key="notif_email"
+        )
 
-    in_app = st.checkbox(
-        "In-App Notifications",
-        value=(existing and existing["in_app"] == "yes"),
-        key="notif_inapp"
-    )
+        in_app = st.checkbox(
+            "In-App Notifications",
+            value=(existing and existing["in_app"] == "yes"),
+            key="notif_inapp"
+        )
 
-    email_id = st.text_input(
-        "Email ID",
-        value=(existing["email_id"] if existing else ""),
-        disabled=not email
-    )
+        email_id = st.text_input(
+            "Email ID",
+            value=(existing.get("email_id", "") if existing else ""),
+            disabled=not email
+        )
+        # UX + data consistency fix
+        if not email:
+            email_id = ""
 
-    if st.button("Save Notification Settings"):
-        if existing:
-            row_index = data.index(existing) + 2
-            ws.update(f"B{row_index}:G{row_index}", [[
-                "yes" if telegram else "no",
-                "yes" if email else "no",
-                "yes" if in_app else "no",
-                existing["telegram_chat_id"],
-                email_id,
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            ]])
-        else:
-            ws.append_row([
-                st.session_state["user_id"],
-                "yes" if telegram else "no",
-                "yes" if email else "no",
-                "yes" if in_app else "no",
-                "",
-                email_id,
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            ])
+        if st.button("Save Notification Settings"):
 
-        st.success("Notification preferences saved ✅")
+            # Clear email if email notifications disabled
+            if not email:
+                email_id = ""
 
+            if existing:
+                row_index = data.index(existing) + 2
+
+                ws.update(f"B{row_index}:H{row_index}", [[
+                    "yes" if telegram else "no",
+                    "yes" if email else "no",
+                    "yes" if in_app else "no",
+                    existing.get("telegram_chat_id", ""),
+                    existing.get("telegram_code", ""),
+                    email_id,
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                ]])
+
+            else:
+                ws.append_row([
+                    user_id,                              # A user_id
+                    "yes" if telegram else "no",           # B telegram
+                    "yes" if email else "no",              # C email
+                    "yes" if in_app else "no",             # D in_app
+                    "",                                    # E telegram_chat_id
+                    st.session_state.get("telegram_code", ""),  # F telegram_code
+                    email_id,                              # G email_id
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # H updated_at
+                ])
+
+            st.success("Notification preferences saved ✅")
