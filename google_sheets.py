@@ -1,4 +1,5 @@
 import gspread
+import streamlit as st
 from google.oauth2.service_account import Credentials
 
 SCOPES = [
@@ -6,6 +7,9 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive"
 ]
 
+
+# ✅ Cache Google Sheets client (VERY IMPORTANT)
+@st.cache_resource(show_spinner=False)
 def get_gsheet_client():
     creds = Credentials.from_service_account_file(
         "attendsmart-482611-d4e53c2dabec.json",
@@ -14,6 +18,8 @@ def get_gsheet_client():
     return gspread.authorize(creds)
 
 
+# ✅ Cache spreadsheet open
+@st.cache_resource(show_spinner=False)
 def open_spreadsheet(spreadsheet_id):
     client = get_gsheet_client()
     return client.open_by_key(spreadsheet_id)

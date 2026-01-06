@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 from google_sheets import open_spreadsheet
-from holidays import is_today_national_holiday, is_today_user_holiday
+from holidays import is_national_holiday, is_today_user_holiday, is_user_holiday
 
 # ================== ENV ==================
 
@@ -18,6 +18,7 @@ if not BOT_TOKEN:
 # ================== CONFIG ==================
 
 SPREADSHEET_ID = "1wGnF_bV3pNMx2l3BtwXEfKFdbs3ToYsgxqqgnKBAqgU"
+spreadsheet = open_spreadsheet(SPREADSHEET_ID)
 
 ATTENDANCE_REMINDER_MINUTES = 5        # After lecture end
 TIMETABLE_REMINDER_HOUR = 21           # 9 PM
@@ -52,8 +53,11 @@ def attendance_reminders(sheet):
     today = now.strftime("%Y-%m-%d")
     today_day = now.strftime("%A")
 
-    if is_today_national_holiday(sheet):
+    today_date = datetime.now().date()
+
+    if is_national_holiday(sheet, today_date):
         return
+
 
     timetable = sheet.worksheet("Timetable").get_all_records()
     attendance = sheet.worksheet("Attendance").get_all_records()
@@ -62,7 +66,7 @@ def attendance_reminders(sheet):
     for lec in timetable:
         user_id = lec["user_id"]
 
-        if is_today_user_holiday(sheet, user_id):
+        if is_today_user_holiday(spreadsheet, user_id):
             continue
 
         if lec["day"] != today_day:
@@ -120,7 +124,7 @@ def timetable_reminders(sheet):
     tomorrow_day = tomorrow.strftime("%A")
     tomorrow_date = tomorrow.strftime("%Y-%m-%d")
 
-    if is_today_national_holiday(sheet, date=tomorrow):
+    if is_national_holiday(sheet, tomorrow.date()):
         return
 
     timetable = sheet.worksheet("Timetable").get_all_records()
@@ -129,7 +133,7 @@ def timetable_reminders(sheet):
     users = set(str(l["user_id"]) for l in timetable)
 
     for user_id in users:
-        if is_today_user_holiday(sheet, user_id, date=tomorrow):
+        if is_today_user_holiday(spreadsheet, user_id):
             continue
 
         lectures = [
@@ -200,16 +204,14 @@ def calculate_attendance(sheet, user_id):
                 continue
 
             # Skip holidays
-            if is_today_national_holiday(sheet, date=current_date):
+            if is_national_holiday(sheet, current_date):
                 current_date += timedelta(days=1)
                 continue
 
-            if is_today_user_holiday(sheet, user_id, date=current_date):
+            if is_user_holiday(spreadsheet, user_id, current_date):
                 current_date += timedelta(days=1)
                 continue
-
-
-            total_lectures += 1
+            #removed total_lectures += 1 from here
 
             record = next(
                 (a for a in attendance
@@ -290,11 +292,11 @@ def predict_risk(sheet, user_id, minimum_required=75):
                 date_ptr += timedelta(days=1)
                 continue
 
-            if is_today_national_holiday(sheet, date=date_ptr):
+            if is_national_holiday(sheet, date_ptr):
                 date_ptr += timedelta(days=1)
                 continue
 
-            if is_today_user_holiday(sheet, user_id, date=date_ptr):
+            if is_user_holiday(spreadsheet, user_id, date_ptr):
                 date_ptr += timedelta(days=1)
                 continue
 
@@ -332,7 +334,7 @@ def predict_risk(sheet, user_id, minimum_required=75):
 # ================== MAIN LOOP ==================
 
 def run():
-    sheet = open_spreadsheet(SPREADSHEET_ID)
+    sheet = spreadsheet
     print("✅ Notification service started")
 
     while True:

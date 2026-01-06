@@ -1,10 +1,14 @@
 import streamlit as st
-from datetime import datetime
+from datetime import datetime, timedelta
 from google_sheets import open_spreadsheet
 from holidays import is_today_national_holiday, is_today_user_holiday
 from notifications import predict_risk
 from notifications import calculate_attendance
 import random
+
+@st.cache_data(ttl=60)
+def get_records(_sheet, worksheet_name):
+    return _sheet.worksheet(worksheet_name).get_all_records()
 
 
 SPREADSHEET_ID = "1wGnF_bV3pNMx2l3BtwXEfKFdbs3ToYsgxqqgnKBAqgU"
@@ -14,9 +18,10 @@ st.title("📚 AttendSmart")
 
 spreadsheet = open_spreadsheet(SPREADSHEET_ID)
 
-tab_login, tab_timetable, tab_holidays, tab_attendance, tab_insights, tab_notifications = st.tabs(
+tab_login, tab_semester, tab_timetable, tab_holidays, tab_attendance, tab_insights, tab_notifications = st.tabs(
     [
         "🔐 Login",
+        "📅 Semester",
         "🗓️ Timetable",
         "🏖️ Holidays",
         "📊 Attendance",
@@ -35,7 +40,8 @@ with tab_login:
 
     def get_or_create_user(name, email):
         users_ws = spreadsheet.worksheet("Users")
-        users = users_ws.get_all_records()
+        users = get_records(spreadsheet, "Users")
+
 
         for user in users:
             if user["email"] == email:
@@ -57,6 +63,69 @@ with tab_login:
             user_id = get_or_create_user(name, email)
             st.session_state["user_id"] = user_id
             st.success(f"Logged in successfully! User ID: {user_id}")
+
+# ---------------- SEMESTER TAB ----------------
+with tab_semester:
+    if "user_id" not in st.session_state:
+        st.warning("Please login first")
+        st.stop()
+
+    st.subheader("📅 Semester Setup")
+
+    ws = spreadsheet.worksheet("Semester")
+    rows = get_records(spreadsheet, "Semester")
+
+
+    user_id = str(st.session_state["user_id"])
+
+    existing = next(
+        (r for r in rows if str(r["user_id"]) == user_id),
+        None
+    )
+
+    # Defaults
+    default_start = (
+        datetime.strptime(existing["semester_start"], "%Y-%m-%d").date()
+        if existing else datetime.today().date()
+    )
+
+    default_end = (
+        datetime.strptime(existing["semester_end"], "%Y-%m-%d").date()
+        if existing else datetime.today().date() + timedelta(days=120)
+    )
+
+    semester_start = st.date_input("Semester Start Date", value=default_start)
+    semester_end = st.date_input("Semester End Date", value=default_end)
+
+    if semester_end <= semester_start:
+        st.error("❌ Semester end date must be after start date")
+        st.stop()
+
+    if st.button("💾 Save Semester"):
+        if existing:
+            row_index = rows.index(existing) + 2
+            ws.update(f"B{row_index}:D{row_index}", [[
+                semester_start.strftime("%Y-%m-%d"),
+                semester_end.strftime("%Y-%m-%d"),
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ]])
+        else:
+            ws.append_row([
+                user_id,
+                semester_start.strftime("%Y-%m-%d"),
+                semester_end.strftime("%Y-%m-%d"),
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ])
+
+        st.success("✅ Semester dates saved successfully")
+        st.rerun()
+
+    if existing:
+        st.info(
+            f"📌 **Current Semester:**\n\n"
+            f"🟢 Start: `{existing['semester_start']}`\n"
+            f"🔴 End: `{existing['semester_end']}`"
+        )
 
     
 
@@ -89,7 +158,8 @@ with tab_holidays:
 
         st.subheader("📋 Your Holidays")
         ws = spreadsheet.worksheet("User_Holidays")
-        all_rows = ws.get_all_records()
+        all_rows = get_records(spreadsheet, "User_Holidays")
+
         user_id = str(st.session_state["user_id"])
 
         user_holidays = []
@@ -169,6 +239,7 @@ with tab_timetable:
     else:
         user_id = str(st.session_state["user_id"])
         # Holiday block (TODAY)
+        
         national = is_today_national_holiday(spreadsheet)
         if national:
             st.info(f"🎉 Today is a National Holiday: **{national}**")
@@ -202,7 +273,8 @@ with tab_timetable:
 
         st.subheader("📋 Your Lectures")
         timetable_ws = spreadsheet.worksheet("Timetable")
-        rows = timetable_ws.get_all_records()
+        rows = get_records(spreadsheet, "Timetable")
+
 
         user_lectures = []
         for idx, row in enumerate(rows, start=2):
@@ -287,8 +359,9 @@ with tab_attendance:
         timetable_ws = spreadsheet.worksheet("Timetable")
         attendance_ws = spreadsheet.worksheet("Attendance")
 
-        lectures = timetable_ws.get_all_records()
-        attendance = attendance_ws.get_all_records()
+        lectures = get_records(spreadsheet, "Timetable")
+        attendance = get_records(spreadsheet, "Attendance")
+
 
         # Today's lectures
         today_lectures = [
@@ -396,7 +469,7 @@ with tab_insights:
 
     from collections import defaultdict
 
-    attendance = spreadsheet.worksheet("Attendance").get_all_records()
+    attendance = get_records(spreadsheet, "Attendance")
 
     subject_data = defaultdict(lambda: {"total": 0, "present": 0})
 
@@ -468,7 +541,7 @@ with tab_notifications:
         st.subheader("🔔 Notification Preferences")
 
         ws = spreadsheet.worksheet("Notification_Settings")
-        data = ws.get_all_records()
+        data = get_records(spreadsheet, "Notification_Settings")
 
         existing = next(
             (r for r in data if str(r["user_id"]) == str(st.session_state["user_id"])),
