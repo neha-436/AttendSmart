@@ -3,6 +3,8 @@ from datetime import datetime
 from google_sheets import open_spreadsheet
 from holidays import is_today_national_holiday, is_today_user_holiday
 from notifications import predict_risk
+from notifications import calculate_attendance
+import random
 
 
 SPREADSHEET_ID = "1wGnF_bV3pNMx2l3BtwXEfKFdbs3ToYsgxqqgnKBAqgU"
@@ -12,9 +14,17 @@ st.title("📚 AttendSmart")
 
 spreadsheet = open_spreadsheet(SPREADSHEET_ID)
 
-tab_login, tab_timetable, tab_holidays, tab_attendance, tab_notifications = st.tabs(
-    ["🔐 Login", "🗓️ Timetable", "🏖️ Holidays", "📊 Attendance", "🔔 Notifications"]
+tab_login, tab_timetable, tab_holidays, tab_attendance, tab_insights, tab_notifications = st.tabs(
+    [
+        "🔐 Login",
+        "🗓️ Timetable",
+        "🏖️ Holidays",
+        "📊 Attendance",
+        "📈 Insights & Risk",
+        "🔔 Notifications"
+    ]
 )
+
 
 # ---------------- LOGIN TAB ----------------
 with tab_login:
@@ -48,83 +58,7 @@ with tab_login:
             st.session_state["user_id"] = user_id
             st.success(f"Logged in successfully! User ID: {user_id}")
 
-    # ---------- TELEGRAM LINKING ----------
-    import random
-
-    if "user_id" in st.session_state:
-
-        st.subheader("📊 Attendance Risk Status")
-
-    try:
-        risk_data = predict_risk(spreadsheet, user_id)
-
-        current_pct = risk_data["current_pct"]
-        projected_pct = risk_data["projected_pct"]
-        risk = risk_data["risk"]
-        message = risk_data["message"]
-
-        # ---- Color Mapping ----
-        if risk == "SAFE":
-            st.success(f"🟢 SAFE — {current_pct}%")
-        elif risk == "BORDERLINE":
-            st.warning(f"🟡 BORDERLINE — {current_pct}%")
-        elif risk == "HIGH":
-            st.error(f"🟠 HIGH RISK — {current_pct}%")
-        else:
-            st.error(f"🔴 CRITICAL — {current_pct}%")
-
-        # ---- Metrics ----
-        col1, col2 = st.columns(2)
-        col1.metric("Current Attendance", f"{current_pct}%")
-        col2.metric("Projected Attendance", f"{projected_pct}%")
-
-        # ---- Explanation ----
-        st.info(message)
-
-    except ValueError as e:
-        st.warning("📅 Semester dates not set yet.")
-        st.caption("Please add semester start & end dates to enable attendance tracking.")
-
-
-
-        st.subheader("🔗 Telegram Linking")
-
-        if "telegram_code" not in st.session_state:
-            st.session_state["telegram_code"] = f"AS-{random.randint(1000,9999)}"
-            ws = spreadsheet.worksheet("Notification_Settings")
-            rows = ws.get_all_records()
-
-            existing = next(
-                (r for r in rows if str(r["user_id"]) == str(st.session_state["user_id"])),
-                None
-            )
-
-            if existing and existing.get("telegram_chat_id"):
-                st.success("✅ Telegram already linked")
-            else:
-                if existing:
-                    row_index = rows.index(existing) + 2
-                    ws.update_cell(row_index, 6, st.session_state["telegram_code"])  # telegram_code
-                else:
-                    ws.append_row([
-                        st.session_state["user_id"],
-                        "no",
-                        "no",
-                        "no",
-                        "",                                # telegram_chat_id
-                        st.session_state["telegram_code"], # telegram_code
-                        "",
-                        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    ])
-
-        st.info(
-            "To receive Telegram notifications:\n\n"
-            f"1️⃣ Open the Telegram bot\n"
-            f"2️⃣ Send this command:\n\n"
-            f"`/link {st.session_state['telegram_code']}`"
-        )
-
-
+    
 
 # ---------------- HOLIDAY TAB ----------------
 with tab_holidays:
@@ -424,6 +358,108 @@ with tab_attendance:
                             ])
                             st.rerun()
 
+
+# ---------------- INSIGHTS & RISK TAB ----------------
+with tab_insights:
+    if "user_id" not in st.session_state:
+        st.warning("Please login first")
+        st.stop()
+
+    user_id = st.session_state["user_id"]
+
+    stats = calculate_attendance(spreadsheet, user_id)
+    if stats["total"] == 0:
+        st.info("📌 No attendance data available yet.")
+        st.caption("Start marking lectures to see attendance insights and risk analysis.")
+        st.stop()
+
+    st.metric(
+        label="📊 Overall Attendance",
+        value=f"{stats['attendance_pct']}%",
+        delta=f"{stats['present']} / {stats['total']} lectures"
+    )
+
+#-----Attendance Risk Level-----
+    risk = predict_risk(spreadsheet, user_id)
+
+    st.subheader("⚠️ Attendance Risk Level")
+
+    if risk["risk"] == "SAFE":
+        st.success(f"🟢 SAFE — {risk['message']}")
+    elif risk["risk"] == "BORDERLINE":
+        st.warning(f"🟡 BORDERLINE — {risk['message']}")
+    else:
+        st.error(f"🔴 {risk['risk']} — {risk['message']}")
+
+#-----Subject Wise Risk-----
+    st.subheader("📚 Subject-wise Risk")
+
+    from collections import defaultdict
+
+    attendance = spreadsheet.worksheet("Attendance").get_all_records()
+
+    subject_data = defaultdict(lambda: {"total": 0, "present": 0})
+
+    for a in attendance:
+        if str(a["user_id"]) != str(user_id):
+            continue
+        if a["status"] == "Off":
+            continue
+
+        subject_data[a["subject"]]["total"] += 1
+        if a["status"] == "Yes":
+            subject_data[a["subject"]]["present"] += 1
+
+    for subject, data in subject_data.items():
+
+        if data["total"] == 0:
+            st.info(f"ℹ️ {subject}: No counted lectures yet")
+            continue
+
+        pct = round((data["present"] / data["total"]) * 100, 2)
+
+        if pct >= 80:
+            st.success(f"🟢 {subject}: {pct}%")
+        elif pct >= 75:
+            st.warning(f"🟡 {subject}: {pct}%")
+        else:
+            st.error(f"🔴 {subject}: {pct}%")
+
+
+#-----Skip Calculator-----
+    st.subheader("🧮 Skip Calculator")
+
+    def max_skippable(present, total, min_pct=75):
+        skips = 0
+        while True:
+            if (present / (total + skips)) * 100 < min_pct:
+                return skips - 1
+            skips += 1
+
+    skips = max_skippable(stats["present"], stats["total"])
+
+    st.info(f"📌 You can skip **{skips}** more lectures and stay above 75%.")
+
+#-----Attendance Trend-----
+    import pandas as pd
+
+    df = pd.DataFrame(attendance)
+    df = df[df["user_id"] == user_id]
+    df["date"] = pd.to_datetime(df["date"])
+    df = df[df["status"] != "Off"]
+
+    weekly = (
+        df.assign(week=df["date"].dt.to_period("W"))
+        .groupby("week")
+        .apply(lambda x: (x["status"] == "Yes").sum() / len(x) * 100)
+        .reset_index(name="pct")
+    )
+
+    weekly["week"] = weekly["week"].astype(str)
+
+    st.subheader("📈 Attendance Trend")
+    st.line_chart(weekly.set_index("week")["pct"])
+
 # ---------------- NOTIFICATIONS TAB ----------------
 with tab_notifications:
     if "user_id" not in st.session_state:
@@ -498,3 +534,46 @@ with tab_notifications:
                 ])
 
             st.success("Notification preferences saved ✅")
+
+            # ---------- TELEGRAM LINKING ----------
+
+        if "user_id" in st.session_state:
+
+            st.subheader("🔗 Telegram Linking")
+
+            if "telegram_code" not in st.session_state:
+                st.session_state["telegram_code"] = f"AS-{random.randint(1000,9999)}"
+                ws = spreadsheet.worksheet("Notification_Settings")
+                rows = ws.get_all_records()
+
+                existing = next(
+                    (r for r in rows if str(r["user_id"]) == str(st.session_state["user_id"])),
+                    None
+                )
+
+                if existing and existing.get("telegram_chat_id"):
+                    st.success("✅ Telegram already linked")
+                else:
+                    if existing:
+                        row_index = rows.index(existing) + 2
+                        ws.update_cell(row_index, 6, st.session_state["telegram_code"])  # telegram_code
+                    else:
+                        ws.append_row([
+                            st.session_state["user_id"],
+                            "no",
+                            "no",
+                            "no",
+                            "",                                # telegram_chat_id
+                            st.session_state["telegram_code"], # telegram_code
+                            "",
+                            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        ])
+
+            st.info(
+                "To receive Telegram notifications:\n\n"
+                f"1️⃣ Open the Telegram bot\n"
+                f"2️⃣ Send this command:\n\n"
+                f"`/link {st.session_state['telegram_code']}`"
+            )
+
+

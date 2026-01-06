@@ -34,11 +34,15 @@ timetable_sent_cache = set()
 
 def send_telegram(chat_id, message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(url, json={
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "Markdown"
-    })
+    try:
+        requests.post(url, json={
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "Markdown"
+        }, timeout=5)
+    except Exception as e:
+        print("Telegram error:", e)
+
 
 
 # ================== ATTENDANCE REMINDER ==================
@@ -196,37 +200,55 @@ def calculate_attendance(sheet, user_id):
                 continue
 
             # Skip holidays
-            if is_today_national_holiday(sheet):
+            if is_today_national_holiday(sheet, date=current_date):
                 current_date += timedelta(days=1)
                 continue
 
-            if is_today_user_holiday(sheet, user_id):
+            if is_today_user_holiday(sheet, user_id, date=current_date):
                 current_date += timedelta(days=1)
                 continue
+
 
             total_lectures += 1
 
             record = next(
                 (a for a in attendance
-                 if str(a["user_id"]) == str(user_id)
-                 and a["date"] == current_date.strftime("%Y-%m-%d")
-                 and a["subject"] == lec["subject"]
-                 and a["start_time"] == lec["start_time"]),
+                if str(a["user_id"]) == str(user_id)
+                and a["date"] == current_date.strftime("%Y-%m-%d")
+                and a["subject"] == lec["subject"]
+                and a["start_time"] == lec["start_time"]),
                 None
             )
+
+            # Skip OFF lectures completely
+            if record and record["status"] == "Off":
+                current_date += timedelta(days=1)
+                continue
+
+            total_lectures += 1
 
             if record and record["status"] == "Yes":
                 present += 1
 
+
             current_date += timedelta(days=1)
 
-    attendance_pct = round((present / total_lectures) * 100, 2) if total_lectures else 100
+    # ---- ZERO ATTENDANCE GUARD ----
+    if total_lectures == 0:
+        return {
+            "attendance_pct": 0,
+            "present": 0,
+            "total": 0
+        }
+
+    attendance_pct = round((present / total_lectures) * 100, 2)
 
     return {
         "attendance_pct": attendance_pct,
         "present": present,
         "total": total_lectures
     }
+
 
 
 
@@ -237,7 +259,19 @@ def predict_risk(sheet, user_id, minimum_required=75):
 
     present = stats["present"]
     total = stats["total"]
+
+    # ---- ZERO ATTENDANCE GUARD ----
+    if total == 0:
+        return {
+            "current_pct": 0,
+            "projected_pct": 0,
+            "future_lectures": 0,
+            "risk": "UNKNOWN",
+            "message": "Not enough attendance data yet."
+        }
+
     current_pct = stats["attendance_pct"]
+
 
     timetable = sheet.worksheet("Timetable").get_all_records()
     semester_start, semester_end = get_semester_dates(sheet, user_id)
@@ -256,13 +290,14 @@ def predict_risk(sheet, user_id, minimum_required=75):
                 date_ptr += timedelta(days=1)
                 continue
 
-            if is_today_national_holiday(sheet):
+            if is_today_national_holiday(sheet, date=date_ptr):
                 date_ptr += timedelta(days=1)
                 continue
 
-            if is_today_user_holiday(sheet, user_id):
+            if is_today_user_holiday(sheet, user_id, date=date_ptr):
                 date_ptr += timedelta(days=1)
                 continue
+
 
             future_lectures += 1
             date_ptr += timedelta(days=1)
